@@ -22,7 +22,7 @@
 #define PWM_CHANNEL_RIGHT  0
 #define PWM_CHANNEL_LEFT   1
 
-// Déclaration du MPU6050
+// Déclaration du MPU6050 
 Adafruit_MPU6050 mpu;
 sensors_event_t a, g, temp;
 
@@ -30,8 +30,11 @@ sensors_event_t a, g, temp;
 char FlagCalcul = 0;
 float Te = 10;   // période d'échantillonnage en ms
 float Tau = 1000; // constante de temps du filtre en ms
+int v = 1; // Valeur de la consigne
 float tG, tGF, tW, tWF, t;
 float A, B;  // Coefficients du filtre
+float Kp = 150;
+float Kd = 0; //entre 1000 et 1800
 
 // Prototypes des tâches
 void tacheMoteurs(void *param);
@@ -101,35 +104,49 @@ void releaseMotor(int brakePin) { digitalWrite(brakePin, LOW); }
 // ✅ Tâche 1 : Gestion des moteurs
 void tacheMoteurs(void *param) {
   while (1) {
-    Serial.println("Moteurs en marche avant...");
-    releaseMotor(BRAKE_RIGHT);
-    releaseMotor(BRAKE_LEFT);
-    setMotorRight(150);
-    setMotorLeft(150);
-    delay(2000);
+    if(FlagCalcul == 1) {
+      /*if (t < 0 ) {
+        setMotorRight(-t*425*v);
+        setMotorLeft(-t*425*v);
+      } else if (t > 0) {
+        setMotorRight(-t*425*v);
+        setMotorLeft(-t*425*v);
+      } else {
+        setMotorRight(0);
+        setMotorLeft(0);
+      }*/
+      float erreur = 0-t;
+      float erreur_precedente = 0;
 
-    Serial.println("Moteurs en marche arrière...");
-    setMotorRight(-150);
-    setMotorLeft(-150);
-    delay(2000);
+      float cmd = Kp * erreur + Kd * (erreur - erreur_precedente);
+      erreur_precedente = erreur;
+      if(cmd >0 && cmd < 30){
+        cmd = 30;
+      }
+      else if(cmd < 0 && cmd > -30){
+        cmd = -30;
+      }
+      setMotorRight(cmd);
+      setMotorLeft(cmd);
 
-    Serial.println("Freinage des moteurs...");
-    stopMotor(BRAKE_RIGHT);
-    stopMotor(BRAKE_LEFT);
-    delay(2000);
+      FlagCalcul = 0;
+    }
+    delay(10);
   }
 }
 
-// ✅ Tâche 2 : Lecture des tensions des batteries
+// Lecture des tensions des batteries
 void tacheBatteries(void *param) {
   while (1) {
-    /*
+    
     float ADC_Batt1 = analogRead(BATT1_PIN) * (3.3 / 4095.0);
     float ADC_Batt2 = analogRead(BATT2_PIN) * (3.3 / 4095.0);
     
     float Tension_Batt1 = ADC_Batt1 * 2.5;
     float Tension_Batt2 = (ADC_Batt2 * 4.9) - Tension_Batt1;
 
+    delay(1000);
+/*
     Serial.print("Tension Batterie 1 : ");
     Serial.print(Tension_Batt1, 2);
     Serial.println(" V");
@@ -139,12 +156,11 @@ void tacheBatteries(void *param) {
     Serial.println(" V");
 
     Serial.println("----------------------");
-    delay(1000);
-    */
+*/
   }
 }
 
-// ✅ Tâche 3 : Acquisition et filtrage du MPU6050
+// Acquisition et filtrage du MPU6050
 void tacheMPU6050(void *param) {
   TickType_t xLastWakeTime;
   xLastWakeTime = xTaskGetTickCount();
@@ -156,15 +172,15 @@ void tacheMPU6050(void *param) {
     tW = Tau / 1000 + g.gyro.z;
     tWF = - A * tW + B * tWF;
     t = tGF + tWF;
+    t += 1; 
     FlagCalcul = 1;
 
-    //Serial.print("tG: ");
     Serial.print(tG);
-    //Serial.print(" | tGF: ");
+    Serial.print(" ");
     Serial.print(tGF);
-    //Serial.print(" | tWF: ");
+    Serial.print(" ");
     Serial.print(tWF);
-    //Serial.print(" | t: ");
+    Serial.print(" ");
     Serial.println(t);
     
     vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(Te));
@@ -196,6 +212,9 @@ void reception(char ch) {
     if (commande == "Te") {
       Te = valeur.toInt();
     }
+    if (commande == "Kp") {
+      Kp = valeur.toFloat();
+    }
     chaine = "";
   } else {
     chaine += ch;
@@ -210,6 +229,6 @@ void serialEvent() {
 }
 
 void loop() {
-  vTaskDelete(NULL); // Supprime loop() car tout est géré dans les tâches
+//  vTaskDelete(NULL); // Supprime loop() car tout est géré dans les tâches
 }
 //test
