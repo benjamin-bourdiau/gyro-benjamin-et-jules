@@ -212,3 +212,4 @@ void serialEvent() {
 void loop() {
   vTaskDelete(NULL); // Supprime loop() car tout est géré dans les tâches
 }
+//test
