@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <ESP32Encoder.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <Wire.h>
@@ -22,24 +23,35 @@
 #define PWM_CHANNEL_RIGHT 0
 #define PWM_CHANNEL_LEFT 1
 
+//COnfiguration des Encoders
+#define CLK_G 19
+#define DT_G 18
+#define CLK_D 25
+#define DT_D 33
+
 // Déclaration du MPU6050
 Adafruit_MPU6050 mpu;
 sensors_event_t a, g, temp;
+ESP32Encoder encoderG, encoderD;
 
 // Variables pour le filtrage du MPU6050
 char FlagCalcul = 0;
 float Te = 10;   // période d'échantillonnage en ms
 float Tau = 200; // constante de temps du filtre en ms
-int v = 1;       // Valeur de la consigne
-float tG, tGF, tW, tWF, t;
+float tG, tGF, tW, tWF, t, tetaCons; //Variables position
+float consVit, obsVit, erreurVitPrec, P, D, DF, vitD, vitG; // Variables vitesse
 float A, B; // Coefficients du filtre
-float Kp = 1200;
-float Kd = 23;
+float Kp_ang = 1200;
+float Kd_ang = 23;
+float Kp_v = 0;
+float Kd_v = 0;
 float cf = 5;
 float cmd;
+float erreurAng, erreurVit;
+int countG, countD, countGprec, countDprec;
 
 // Prototypes des tâches
-void tacheMoteurs(void *param);
+void tacheMoteurs(void);
 void tacheBatteries(void *param);
 void tacheMPU6050(void *param);
 
@@ -64,6 +76,11 @@ void setup()
   ledcAttachPin(PWM_RIGHT, PWM_CHANNEL_RIGHT);
   ledcSetup(PWM_CHANNEL_LEFT, PWM_FREQ, PWM_BITS);
   ledcAttachPin(PWM_LEFT, PWM_CHANNEL_LEFT);
+
+  encoderD.attachFullQuad(CLK_D, DT_D);
+  encoderD.setCount(0);
+  encoderG.attachFullQuad(CLK_G, DT_G);
+  encoderG.setCount(0);
 
   // Initialisation de l'ADC pour les batteries
   analogReadResolution(12);
@@ -110,34 +127,65 @@ void setMotorLeft(int speed)
 void stopMotor(int brakePin) { digitalWrite(brakePin, HIGH); }
 void releaseMotor(int brakePin) { digitalWrite(brakePin, LOW); }
 
-// ✅ Tâche 1 : Gestion des moteurs
+float getVitesse(void)
+{
+  countG = encoderG.getCount()/2;
+  countD = encoderD.getCount()/2;
+  encoderG.clearCount();
+  encoderD.clearCount();
+  vitG = (countG - countGprec) / (Te/1000);
+  vitD = (countD - countDprec) / (Te/1000);
+  countDprec = countD;
+  countGprec = countG;
+  obsVit = (vitG + vitD) / 2;
+  return obsVit;
+}
+
+// Gestion des moteurs
 void tacheMoteurs(void)
 {
+/***********************************************/
+// asservissement en vitesse
+/***********************************************/
 
-  float erreur = 0 - t;
- 
-  cmd = Kp * erreur + Kd * g.gyro.z;
- 
+  getVitesse();
+  erreurVit = consVit - obsVit;
+  P = Kp_v * erreurVit;
+  D = Kd_v * (erreurVit - erreurVitPrec);
+  DF = A * D + B * DF;
+  erreurVitPrec = erreurVit;
+  tetaCons = P + DF;
+  
+/***********************************************/
+// asservissement en position
+/***********************************************/
+
+  erreurAng = tetaCons - t;
+  cmd = Kp_ang * erreurAng + Kd_ang * g.gyro.z;
+
+  // commande moteurs
   if (cmd > 0)
   {
-    cmd = cmd + cf;
+    cmd += cf;
   }
   else if (cmd < 0)
   {
-    cmd = cmd - cf;
+    cmd -= cf;
   }
   setMotorRight(cmd);
   setMotorLeft(cmd);
 }
 
+/***********************************************/
 // Lecture des tensions des batteries
+/***********************************************/
+
 void tacheBatteries(void *param)
 {
   TickType_t xLastWakeTime;
   xLastWakeTime = xTaskGetTickCount();
   while (1)
   {
-
     float ADC_Batt1 = analogRead(BATT1_PIN) * (3.3 / 4095.0);
     float ADC_Batt2 = analogRead(BATT2_PIN) * (3.3 / 4095.0);
 
@@ -162,7 +210,6 @@ void tacheMPU6050(void *param)
     tW = -Tau / 1000 * g.gyro.z;
     tWF = A * tW + B * tWF;
     t = tGF + tWF;
-    // t += 1;
 
     tacheMoteurs();
     FlagCalcul = 1;
@@ -199,37 +246,21 @@ void reception(char ch)
       A = 1 / (1 + Tau / Te);
       B = Tau / Te * A;
     }
-    if (commande == "Te")
-    {
-      Te = valeur.toInt();
-    }
-    if (commande == "Kp")
-    {
-      Kp = valeur.toFloat();
-    }
-    if (commande == "Kd")
-    {
-      Kd = valeur.toFloat();
-    }
-    if (commande == "cf")
-    {
-      cf = valeur.toFloat();
-    }
+    if (commande == "Te") Te = valeur.toInt();
+    if (commande == "Kp_ang") Kp_ang = valeur.toFloat();
+    if (commande == "Kd_ang") Kd_ang = valeur.toFloat();
+    if (commande == "Kp_v") Kp_v = valeur.toFloat();
+    if (commande == "Kd_v") Kd_v = valeur.toFloat();
+    if (commande == "cf") cf = valeur.toFloat();
     chaine = "";
   }
-  else
-  {
-    chaine += ch;
-  }
+  else chaine += ch;
 }
 
 // Lecture des données UART
 void serialEvent()
 {
-  while (Serial.available() > 0)
-  {
-    reception(Serial.read());
-  }
+  while (Serial.available() > 0) reception(Serial.read());
 }
 
 void loop()
@@ -246,4 +277,3 @@ void loop()
     FlagCalcul = 0;
   }
 }
-// test
