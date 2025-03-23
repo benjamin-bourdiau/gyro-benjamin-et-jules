@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "BluetoothSerial.h"
 #include <ESP32Encoder.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
@@ -36,19 +37,20 @@ ESP32Encoder encoderG, encoderD;
 
 // Variables pour le filtrage du MPU6050
 char FlagCalcul = 0;
-float Te = 10;   // période d'échantillonnage en ms
-float Tau = 200; // constante de temps du filtre en ms
-float tG, tGF, tW, tWF, t, tetaCons; //Variables position
-float consVit, obsVit, erreurVitPrec, P, D, DF, vitD, vitG; // Variables vitesse
-float A, B; // Coefficients du filtre
+float Te = 5;   // période d'échantillonnage en ms
+float Tau = 200, tau_vitess = 40; // constante de temps du filtre en ms
+float tG, tGF, tW, tWF, t, tetaCons, tetaEq; //Variables position
+float consVit, obsVit, erreurVitPrec, P, D, DF, I, vitD, vitG, obsVitF; // Variables vitesse
+float A, B, A_v, B_v; // Coefficients du filtre
 float Kp_ang = 1200;
 float Kd_ang = 23;
 float Kp_v = 0;
 float Kd_v = 0;
-float cf = 5;
+float Ki_v = 0;
+float cf = 10;
 float cmd;
 float erreurAng, erreurVit;
-int countG, countD, countGprec, countDprec;
+int countG, countD;
 
 // Prototypes des tâches
 void tacheMoteurs(void);
@@ -103,6 +105,9 @@ void setup()
   A = 1 / (1 + Tau / Te);
   B = Tau / Te * A;
 
+  A_v = 1 / (1 + tau_vitess / Te);
+  B_v = tau_vitess / Te * A_v;
+
   // Création des tâches
 
   xTaskCreate(tacheBatteries, "Tâche Batteries", 10000, NULL, 1, NULL);
@@ -129,16 +134,15 @@ void releaseMotor(int brakePin) { digitalWrite(brakePin, LOW); }
 
 float getVitesse(void)
 {
-  countG = encoderG.getCount()/2;
-  countD = encoderD.getCount()/2;
+  countG = encoderG.getCount();
+  countD = encoderD.getCount();
+  vitG = (countG) / (Te/1000);
+  vitD = (countD) / (Te/1000);
   encoderG.clearCount();
   encoderD.clearCount();
-  vitG = (countG - countGprec) / (Te/1000);
-  vitD = (countD - countDprec) / (Te/1000);
-  countDprec = countD;
-  countGprec = countG;
-  obsVit = (vitG + vitD) / 2;
-  return obsVit;
+  obsVit = (vitG - vitD) / 2; //moyenne des vitesses des deux roues
+  obsVitF = (A_v * obsVit + B_v * obsVitF)/1000;
+  return obsVitF;
 }
 
 // Gestion des moteurs
@@ -149,12 +153,15 @@ void tacheMoteurs(void)
 /***********************************************/
 
   getVitesse();
-  erreurVit = consVit - obsVit;
+  erreurVit = consVit - obsVitF;
   P = Kp_v * erreurVit;
   D = Kd_v * (erreurVit - erreurVitPrec);
   DF = A * D + B * DF;
+  I += Ki_v * erreurVit;
+  if(I > 0.1) I = 0.1;
+  if(I < -0.1) I = -0.1; 
   erreurVitPrec = erreurVit;
-  tetaCons = P + DF;
+  tetaCons = P + DF + I + tetaEq;
   
 /***********************************************/
 // asservissement en position
@@ -164,14 +171,12 @@ void tacheMoteurs(void)
   cmd = Kp_ang * erreurAng + Kd_ang * g.gyro.z;
 
   // commande moteurs
-  if (cmd > 0)
-  {
-    cmd += cf;
-  }
-  else if (cmd < 0)
-  {
-    cmd -= cf;
-  }
+  if (cmd > 0) cmd += cf;
+  else if (cmd < 0) cmd -= cf;
+  
+  //saturation de la commande
+  if (cmd > 400) cmd = 400;
+  if (cmd < -400) cmd = -400;
   setMotorRight(cmd);
   setMotorLeft(cmd);
 }
@@ -251,7 +256,9 @@ void reception(char ch)
     if (commande == "Kd_ang") Kd_ang = valeur.toFloat();
     if (commande == "Kp_v") Kp_v = valeur.toFloat();
     if (commande == "Kd_v") Kd_v = valeur.toFloat();
+    if (commande == "Ki_v") Ki_v = valeur.toFloat();
     if (commande == "cf") cf = valeur.toFloat();
+    if (commande == "tetaEq") tetaEq = valeur.toFloat();
     chaine = "";
   }
   else chaine += ch;
@@ -267,13 +274,21 @@ void loop()
 {
   if (FlagCalcul == 1)
   {
+  /*
+    Serial.print(cmd);
+    Serial.print(" ");*/
+    Serial.print(tetaCons);
+    Serial.print(" ");
     Serial.print(t);
     Serial.print(" ");
     Serial.print(cmd);
     Serial.print(" ");
-    Serial.print(tWF);
-    Serial.print(" ");
-    Serial.println(t);
+    Serial.println(obsVitF);
     FlagCalcul = 0;
   }
 }
+
+//tetaEq = 0.035
+//Kp_v = -0.121
+//Kd_v = 1.9
+//Ki_v = 0.0091
